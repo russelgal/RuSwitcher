@@ -1,0 +1,26 @@
+# Сборка .app в CI (форк): universal-бинарь, ad-hoc подпись (сертификата автора
+# в форке нет), артефакт — zip с бандлом. Нотаризации нет — при установке снять
+# карантин: xattr -dr com.apple.quarantine /Applications/RuSwitcher.app
+name: build
+
+on:
+  push:
+    branches: [main, smooth]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build app (ad-hoc signed)
+        run: RS_SIGN_ID="-" bash macos/build_app.sh
+
+      - name: Zip app bundle
+        run: ditto -c -k --keepParent macos/RuSwitcher.app RuSwitcher.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RuSwitcher-adhoc
+          path: RuSwitcher.zip
