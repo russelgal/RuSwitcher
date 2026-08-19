@@ -492,28 +492,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// лишнюю букву, issue #16) и удалёнка (латентность Screen Sharing делает посимвольный
     /// путь ненадёжным) — оба отдаём словарному пути на пробеле.
     private func handleInstantConvert() {
+        // ПОРЯДОК ПРОВЕРОК ВАЖЕН: этот метод зовётся на КАЖДУЮ набранную букву, поэтому сперва
+        // идёт только дешёвое — настройки из памяти, кэшированный маппинг клавиш и сам детектор
+        // (чтение битов). Дорогие системные запросы — frontmostApplication (синхронный IPC),
+        // secure-input, AX-проба Spotlight — стоят ПОСЛЕ вердикта: их цена платится раз в
+        // несколько слов, а не 10 раз в секунду. Иначе фича сама стала бы источником фризов,
+        // ради устранения которых затевался этот форк.
         guard SettingsManager.shared.autoSwitchEnabled,
               SettingsManager.shared.autoConvert,
-              SettingsManager.shared.instantConvert else { return }
-        guard !AutoSwitchPolicy.secureInputActive else { return }
-        if AutoSwitchPolicy.shouldDeferToRemoteClient { return }
-        if SettingsManager.shared.remoteDesktopMode { return }
-        let frontID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        if AutoSwitchPolicy.isDeniedApp(frontID) { return }
-        if SpotlightAX.isActive() { return }
+              SettingsManager.shared.instantConvert,
+              !SettingsManager.shared.remoteDesktopMode else { return }
 
         let keys = keyboardMonitor.currentWordKeys
         guard keys.count >= InstantDetector.minLength else { return }
         guard let pair = DynamicKeyMapping.convertKeys(keys) else { return }
-        // never-convert проверяем ПО ПРЕФИКСУ: слово ещё набирается, и точное сравнение
-        // пропустило бы запрет — «ghbdtn» конвертнулось бы на «ghb», не дойдя до себя.
-        if AutoSwitchPolicy.isDeniedPrefix(pair.original, pair.converted) { return }
         guard let langs = LayoutSwitcher.currentAndOppositeLanguage() else { return }
 
         let capsLock = keys.contains { $0.caps }
         guard InstantDetector.shouldSwitch(typed: pair.original, converted: pair.converted,
                                            currentLang: langs.current, otherLang: langs.opposite,
                                            capsLock: capsLock) else { return }
+
+        // Детектор сказал «переключить» — вот теперь платим за политики и системные пробы.
+        // never-convert проверяем ПО ПРЕФИКСУ: слово ещё набирается, и точное сравнение
+        // пропустило бы запрет — «ghbdtn» конвертнулось бы на «ghb», не дойдя до себя.
+        if AutoSwitchPolicy.isDeniedPrefix(pair.original, pair.converted) { return }
+        guard !AutoSwitchPolicy.secureInputActive else { return }
+        if AutoSwitchPolicy.isDeniedApp(NSWorkspace.shared.frontmostApplication?.bundleIdentifier) { return }
+        if SpotlightAX.isActive() { return }
 
         rslog("instant: convert \(keys.count) keys \(langs.current)→\(langs.opposite)")  // слова не логируем (приватность)
         // Сначала пробуем починить хвост фразы: слова перед текущим могли проскочить, пока
@@ -529,7 +535,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             keyboardMonitor.markConverted()
             LayoutSwitcher.switchToOpposite()
             updateStatusIcon()
-            lastAutoConverted = (pair.original, Date())
+            // lastAutoConverted намеренно НЕ ставим: он кормит предложение «запомнить слово в
+            // исключения» после отката, а здесь слово ещё не дописано — в диалог уехал бы
+            // огрызок вроде «ghb», да ещё и запретил бы по префиксу все слова на «при».
         }
     }
 
@@ -633,6 +641,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if suffix.isEmpty,
                textConverter.convertSpotlightWord(converted: pair.converted, boundaryCount: bc) {
                 keyboardMonitor.markConverted()
+                keyboardMonitor.allowNextWord()   // слово закончено пробелом — следующее судим заново
                 LayoutSwitcher.switchToOpposite()
                 updateStatusIcon()
                 lastAutoConverted = (pair.original, Date())
@@ -644,6 +653,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if textConverter.convert(wordKeys: [], prevWordKeys: keys, boundaryCount: bc,
                                  passthroughSuffix: suffix) {
             keyboardMonitor.markConverted()
+            keyboardMonitor.allowNextWord()   // слово закончено пробелом — следующее судим заново
             LayoutSwitcher.switchToOpposite()
             updateStatusIcon()
             lastAutoConverted = (pair.original, Date())

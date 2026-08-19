@@ -275,6 +275,13 @@ final class KeyboardMonitor: @unchecked Sendable {
         wordHandled = true
     }
 
+    /// Слово закончено — со следующего решаем заново. Нужен пути на пробеле: он приходит
+    /// АСИНХРОННО, уже после того как обработчик пробела снял флаг, и его markConverted()
+    /// взводил бы флаг задним числом — глуша конверсию на лету на всё следующее слово.
+    func allowNextWord() {
+        wordHandled = false
+    }
+
     /// issue #24 / скептик 3.2.0: системная смена раскладки (globe / Ctrl-Space) не проходит через
     /// наш обработчик клавиш, поэтому буфер строки декодировался бы старой раскладкой. Сбрасываем
     /// его (только строку — словный буфер трогаем как раньше).
@@ -306,9 +313,12 @@ final class KeyboardMonitor: @unchecked Sendable {
 
     /// Набрана очередная буква незаконченного слова — дёргаем путь конверсии на лету.
     /// Как и граница слова, уходит async: в колбэке тапа нельзя ни считать, ни ждать.
+    /// Сначала проверяем поля в памяти и только потом настройки: это самый горячий путь в
+    /// приложении (каждое нажатие), и при выключенной фиче он обязан стоить почти ничего.
     private func fireTypingLetter() {
-        guard SettingsManager.shared.instantConvert, !wordHandled,
-              currentWordLength >= InstantDetector.minLength else { return }
+        guard currentWordLength >= InstantDetector.minLength, !wordHandled,
+              SettingsManager.shared.instantConvert, SettingsManager.shared.autoConvert,
+              SettingsManager.shared.autoSwitchEnabled else { return }
         let cb = onTypingLetter
         DispatchQueue.main.async { cb?() }
     }
