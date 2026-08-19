@@ -516,7 +516,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                            capsLock: capsLock) else { return }
 
         rslog("instant: convert \(keys.count) keys \(langs.current)→\(langs.opposite)")  // слова не логируем (приватность)
-        if textConverter.convert(wordKeys: keys, prevWordKeys: [], boundaryCount: 0) {
+        // Сначала пробуем починить хвост фразы: слова перед текущим могли проскочить, пока
+        // язык фразы был неясен («dj gfitn» → «во пашет»). Если в голове чинить нечего,
+        // метод отказывается, и делаем обычную однословную замену.
+        let toCyrillic = SmartConvert.isCyrillic(lang: langs.opposite)
+        let converted = textConverter.convertLineTail(lineKeys: keyboardMonitor.lineKeys,
+                                                      tailLength: keys.count,
+                                                      tailConverted: pair.converted,
+                                                      toCyrillic: toCyrillic)
+            || textConverter.convert(wordKeys: keys, prevWordKeys: [], boundaryCount: 0)
+        if converted {
             keyboardMonitor.markConverted()
             LayoutSwitcher.switchToOpposite()
             updateStatusIcon()
