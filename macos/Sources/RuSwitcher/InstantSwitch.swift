@@ -7,10 +7,11 @@ import Foundation
 /// «ghb» он молчит. Здесь работают две модели, обе про начало слова и обе без XPC — только
 /// чтение битов, поэтому их не страшно гнать на каждую нажатую букву:
 ///
-///  1. Статистика буквосочетаний (`NGramTables`): «ghb» для английского невозможно, а «при»
-///     для русского обычно.
-///  2. Начала настоящих слов (`WordPrefixes`): «при» начинает живые русские слова, «ghb» —
-///     никакие английские.
+///  1. Статистика буквосочетаний: «ghb» для английского невозможно, а «при» для русского обычно.
+///  2. Начала настоящих слов: «при» начинает живые русские слова, «ghb» — никакие английские.
+///
+/// Обе таблицы приходят языковыми паками, которые скачиваются по включению настройки и лежат в
+/// Application Support (`InstantTables`) — в бинаре данных нет. Нет пака — детектор молчит.
 ///
 /// Поодиночке каждая ошибается, и по-разному. Статистика честно считает «http» невозможным
 /// сочетанием — сам по себе этот детектор превращал бы «htt» в «рее». Словарь начал слов, наоборот,
@@ -38,10 +39,11 @@ enum InstantDetector {
     /// true — набранное стоит немедленно сконвертировать и переключить раскладку.
     /// `typed`/`converted` — то же, что отдаёт `DynamicKeyMapping.convertKeys` для буфера
     /// текущего слова; языки — от `LayoutSwitcher.currentAndOppositeLanguage()`.
+    @MainActor
     static func shouldSwitch(typed: String, converted: String,
                              currentLang: String, otherLang: String, capsLock: Bool) -> Bool {
-        // Пары без таблиц (иврит, немецкий, любая третья раскладка) молчат — их обслуживает
-        // словарный путь на пробеле. Статистику под каждый язык нужно генерировать отдельно.
+        // Нет пака хотя бы одной стороны (не скачан, язык без таблиц — иврит, немецкий, любая
+        // третья раскладка) — молчим, работает словарный путь на пробеле.
         guard let cur = language(currentLang), let oth = language(otherLang) else { return false }
         guard typed.count >= minLength, typed.count == converted.count else { return false }
 
@@ -64,18 +66,20 @@ enum InstantDetector {
         return cur.ngrams.hasImpossible(t) && !cur.prefixes.isWordStart(t)
     }
 
-    /// Разворачивает таблицы из base64 заранее (вызывается из прогрева на старте) — чтобы
-    /// первая же набранная буква не платила за инициализацию статики.
+    /// Читает паки текущей пары раскладок с диска заранее (вызывается из прогрева на старте) —
+    /// чтобы первая же набранная буква не платила за чтение файла.
+    @MainActor
     static func warmUp() {
-        _ = shouldSwitch(typed: "ghb", converted: "при", currentLang: "en", otherLang: "ru", capsLock: false)
-        _ = shouldSwitch(typed: "зкщ", converted: "pro", currentLang: "ru", otherLang: "en", capsLock: false)
+        guard SettingsManager.shared.instantConvert,
+              let langs = LayoutSwitcher.currentAndOppositeLanguage() else { return }
+        _ = InstantTables.tables(for: langs.current)
+        _ = InstantTables.tables(for: langs.opposite)
     }
 
-    private static func language(_ lang: String) -> (ngrams: NGramSet, prefixes: PrefixBloom)? {
-        switch String(lang.prefix(2)) {
-        case "ru": return (NGramTables.ru, WordPrefixes.ru)
-        case "en": return (NGramTables.en, WordPrefixes.en)
-        default:   return nil
-        }
+    /// Таблицы языка. nil — пак не скачан (или битый): тогда фича молчит, работает словарный
+    /// путь на пробеле. Языки не захардкожены — что скачано, с тем и работаем.
+    @MainActor
+    private static func language(_ lang: String) -> LanguageTables? {
+        InstantTables.tables(for: lang)
     }
 }
